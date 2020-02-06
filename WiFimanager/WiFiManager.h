@@ -173,7 +173,9 @@ class WiFiManager
     void          handleRoot();
     void          handleWifi(boolean scan);
 	void          handleSetup(boolean scan);
+	void          handleConnect();
     void          handleWifiSave();
+	void          handleDisconnect();
     void          handleInfo();
     void          handleReset();
     void          handleNotFound();

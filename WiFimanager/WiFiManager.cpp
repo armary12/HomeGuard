@@ -12,6 +12,8 @@
 
 #include "WiFiManager.h"
 
+int connRes;
+
 WiFiManagerParameter::WiFiManagerParameter(const char *custom) {
   _id = NULL;
   _placeholder = NULL;
@@ -124,8 +126,10 @@ void WiFiManager::setupConfigPortal() {
   server->on("/", std::bind(&WiFiManager::handleRoot, this));
   server->on("/wifi", std::bind(&WiFiManager::handleWifi, this, true));
   server->on("/setup", std::bind(&WiFiManager::handleSetup, this, true));
+  server->on("/connect", std::bind(&WiFiManager::handleConnect, this));
   server->on("/0wifi", std::bind(&WiFiManager::handleWifi, this, false));
   server->on("/wifisave", std::bind(&WiFiManager::handleWifiSave, this));
+  server->on("/disconnect", std::bind(&WiFiManager::handleDisconnect, this));
   server->on("/i", std::bind(&WiFiManager::handleInfo, this));
   server->on("/r", std::bind(&WiFiManager::handleReset, this));
   //server->on("/generate_204", std::bind(&WiFiManager::handle204, this));  //Android/Chrome OS captive portal check.
@@ -214,6 +218,7 @@ boolean  WiFiManager::startConfigPortal(char const *apName, char const *apPasswo
       // using user-provided  _ssid, _pass in place of system-stored ssid and pass
       if (connectWifi(_ssid, _pass) != WL_CONNECTED) {
         DEBUG_WM(F("Failed to connect."));
+	  	
       } else {
         //connected
         WiFi.mode(WIFI_STA);
@@ -255,15 +260,16 @@ int WiFiManager::connectWifi(String ssid, String pass) {
     DEBUG_WM(WiFi.localIP());
   }
   //fix for auto connect racing issue
-  if (WiFi.status() == WL_CONNECTED) {
-    DEBUG_WM("Already connected. Bailing out.");
-    return WL_CONNECTED;
-  }
+  //if (WiFi.status() == WL_CONNECTED) {
+  //  DEBUG_WM("Already connected. Bailing out.");
+  //  return WL_CONNECTED;
+  //}
   //check if we have ssid and pass and force those, if not, try with last saved values
   if (ssid != "") {
     WiFi.begin(ssid.c_str(), pass.c_str());
   } else {
     if (WiFi.SSID()) {
+      Serial.print(WiFi.SSID());
       DEBUG_WM("Using last saved values, should be faster");
 #if defined(ESP8266)
       //trying to fix connection in progress hanging
@@ -280,7 +286,7 @@ int WiFiManager::connectWifi(String ssid, String pass) {
     }
   }
 
-  int connRes = waitForConnectResult();
+  connRes = waitForConnectResult();
   DEBUG_WM ("Connection result: ");
   DEBUG_WM ( connRes );
   //not connected, WPS enabled, no pass - first attempt
@@ -672,7 +678,7 @@ void WiFiManager::handleSetup(boolean scan) {
           }
           //DEBUG_WM(item);
           page += item;
-		  if (n-1 != 1){
+		  if (n-i != 1){
           page += ",";
 		  }
 		  delay(0);
@@ -686,7 +692,7 @@ void WiFiManager::handleSetup(boolean scan) {
   page += "}";
   }
   server->sendHeader("Content-Length", String(page.length()));
-  server->send(200, "text/text", page);
+  server->send(200, "text/plain", page);
 
 
   DEBUG_WM(F("Sent config page"));
@@ -703,7 +709,9 @@ void WiFiManager::handleWifiSave() {
 
   //SAVE/connect here
   _ssid = server->arg("s").c_str();
+  Serial.print(_ssid);
   _pass = server->arg("p").c_str();
+  Serial.print(_pass);
   _nvr_ip = server->arg("n").c_str();
   //parameters
   for (int i = 0; i < _paramsCount; i++) {
@@ -755,6 +763,80 @@ void WiFiManager::handleWifiSave() {
 
   connect = true; //signal ready to connect/reset
 }
+
+
+/** Handle the WLAN save form and redirect to WLAN config page again */
+void WiFiManager::handleConnect() {
+  DEBUG_WM(F("WiFi save"));
+
+  //SAVE/connect here
+  _ssid = server->arg("ssid").c_str();
+  Serial.println(_ssid);
+  _pass = server->arg("password").c_str();
+  Serial.println(_pass);
+  _nvr_ip = server->arg("n").c_str();
+  //parameters
+  for (int i = 0; i < _paramsCount; i++) {
+    if (_params[i] == NULL) {
+      break;
+    }
+    //read parameter
+    String value = server->arg(_params[i]->getID()).c_str();
+    //store it in array
+    value.toCharArray(_params[i]->_value, _params[i]->_length);
+    DEBUG_WM(F("Parameter"));
+    DEBUG_WM(_params[i]->getID());
+    DEBUG_WM(value);
+  }
+
+  if (server->arg("ip") != "") {
+    DEBUG_WM(F("static ip"));
+    DEBUG_WM(server->arg("ip"));
+    //_sta_static_ip.fromString(server->arg("ip"));
+    String ip = server->arg("ip");
+    optionalIPFromString(&_sta_static_ip, ip.c_str());
+  }
+  if (server->arg("gw") != "") {
+    DEBUG_WM(F("static gateway"));
+    DEBUG_WM(server->arg("gw"));
+    String gw = server->arg("gw");
+    optionalIPFromString(&_sta_static_gw, gw.c_str());
+  }
+  if (server->arg("sn") != "") {
+    DEBUG_WM(F("static netmask"));
+    DEBUG_WM(server->arg("sn"));
+    String sn = server->arg("sn");
+    optionalIPFromString(&_sta_static_sn, sn.c_str());
+  }
+
+  String page = FPSTR(HTTP_HEAD1);
+  page.replace("{v}", "Credentials Saved");
+  page += FPSTR(HTTP_SCRIPT);
+  page += FPSTR(HTTP_STYLE);
+  page += _customHeadElement;
+  page += FPSTR(HTTP_HEAD_END);
+  page += FPSTR(HTTP_SAVED);
+  page += FPSTR(HTTP_END);
+
+  server->sendHeader("Content-Length", String(page.length()));
+  server->send(200, "text/html", page);
+
+  DEBUG_WM(F("Sent wifi save page"));
+
+  connect = true; //signal ready to connect/reset
+}
+
+
+void WiFiManager::handleDisconnect() {
+	delay(500);
+    WiFi.disconnect(true, true);
+    //delay(3000);
+    //ESP.restart();
+	String page = String("Disconnected.");
+	server->sendHeader("Content-Length", String(page.length()));
+    server->send(200, "text/html", page);
+}
+
 
 /** Handle the info page */
 void WiFiManager::handleInfo() {
